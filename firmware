@@ -1,0 +1,649 @@
+esphome:
+  name: kotel
+  friendly_name: kotel
+
+  platformio_options:
+    board_build.flash_mode: dout
+    board_build.f_flash: 40000000L
+  
+  on_boot:
+    priority: 600
+    then:
+      - lambda: |-
+          #include "soc/soc.h"
+          #include "soc/rtc_cntl_reg.h"
+          WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+
+  includes:
+    - my_http.h
+
+esp32:
+  board: esp32dev
+  framework:
+    type: arduino
+
+preferences:
+  flash_write_interval: 0s
+
+http_request:
+  timeout: 2s
+
+wifi:
+  ssid: "ihoko"
+  password: "12345678"
+  manual_ip:
+    static_ip: 192.168.50.130
+    gateway: 192.168.50.1
+    subnet: 255.255.255.0
+  power_save_mode: none
+  ap:
+    ssid: "Kotel"
+    password: "11115555"
+    channel: 6 
+
+logger:
+  level: INFO
+  baud_rate: 0
+
+web_server:
+  port: 80
+
+api:
+  encryption:
+    key: "A8gv08iwmQ20HRZZVFIBvNbFUI3WCG3l23rN8efCvr4="
+  reboot_timeout: 0s
+
+ota:
+  - platform: esphome
+    password: "761ce93d26114d433f11a7ad7cdd2903"
+  - platform: web_server
+
+globals:
+  - id: kotel_mode
+    type: int
+    restore_value: true
+    initial_value: '0'
+  - id: target_temp_kotel
+    type: float
+    restore_value: true
+    initial_value: '60.0'
+  - id: temp_pump_start
+    type: float
+    restore_value: true
+    initial_value: '40.0'
+  - id: ignition_timeout_min
+    type: int
+    restore_value: true
+    initial_value: '30'
+  - id: temp_extinguish
+    type: float
+    restore_value: true
+    initial_value: '35.0'
+  - id: temp_auto_ignite
+    type: float
+    restore_value: true
+    initial_value: '30.0'
+  - id: temp_overheat
+    type: float
+    restore_value: true
+    initial_value: '85.0'
+  
+  - id: target_temp_boiler
+    type: float
+    restore_value: true
+    initial_value: '50.0'
+  - id: boiler_hysteresis
+    type: float
+    restore_value: true
+    initial_value: '5.0'
+  - id: boiler_enabled
+    type: bool
+    restore_value: false
+    initial_value: 'false'
+
+  - id: ignition_start_time
+    type: int
+    initial_value: '0'
+    
+  - id: floor_pump_state
+    type: bool
+    initial_value: 'false'
+  - id: current_page
+    type: int
+    initial_value: '0' 
+  - id: menu_cursor
+    type: int
+    initial_value: '0'
+  - id: menu_timeout
+    type: int
+    initial_value: '0'
+  - id: current_pid_value
+    type: float
+    initial_value: '0.0'
+  - id: target_floor_start
+    type: float
+    restore_value: true
+    initial_value: '25.0'
+
+font:
+  - file: "gfonts://Roboto"
+    id: font_main
+    size: 14
+  - file: "gfonts://Roboto"
+    id: font_small
+    size: 10
+
+one_wire:
+  - platform: gpio
+    pin: GPIO32
+
+sensor:
+  - platform: dallas_temp
+    address: 0x290000004731d428
+    name: "Темп. Подачі"
+    id: temp_flow
+    update_interval: 1s
+  - platform: dallas_temp
+    address: 0x8300000045002d28
+    name: "Темп. Обратки"
+    id: temp_return
+    update_interval: 1s
+  - platform: dallas_temp
+    address: 0xa600000047611328
+    name: "Темп. Води Бойлер"
+    id: temp_water
+    update_interval: 1s
+
+  - platform: template
+    name: "Темп. Підлоги (Remote)"
+    id: floor_temp_remote
+    unit_of_measurement: "°C"
+    accuracy_decimals: 1
+    lambda: return get_r_val(0);
+    update_interval: 10s
+
+  - platform: adc
+    pin: GPIO33
+    name: "Напруга Мережі"
+    id: mains_voltage
+    update_interval: 2s
+    filters: [multiply: 2.985]
+
+  - platform: adc
+    pin: GPIO34
+    name: "Напруга Акумулятора"
+    id: bat_voltage
+    update_interval: 5s
+    filters: [multiply: 5.965]
+
+  # Датчики кімнат
+  - platform: template
+    name: "Кімната 1 T"
+    lambda: return get_r_val(1);
+    unit_of_measurement: "°C"
+    update_interval: 60s
+  - platform: template
+    name: "Кімната 1 H"
+    lambda: return get_r_val(2);
+    unit_of_measurement: "%"
+    update_interval: 60s
+  - platform: template
+    name: "Кімната 1 P"
+    lambda: return get_r_val(3);
+    unit_of_measurement: "hPa"
+    update_interval: 60s
+
+climate:
+  - platform: pid
+    id: kotel_pid_climate
+    name: "ПІД Регулятор"
+    sensor: temp_flow
+    default_target_temperature: 60
+    heat_output: pid_intermediate_output
+    control_parameters:
+      kp: 0.1
+      ki: 0.001
+      kd: 0.05
+
+output:
+  - platform: template
+    id: pid_intermediate_output
+    type: float
+    write_action:
+      - globals.set:
+          id: current_pid_value
+          value: !lambda 'return state;'
+
+  - platform: ledc
+    pin: GPIO4
+    id: fan_12v_pwm
+  - platform: ledc
+    pin: GPIO13
+    id: pump_12v_pwm
+
+number:
+  - platform: template
+    name: "Котел: Цільова T"
+    id: web_target_kotel
+    min_value: 30
+    max_value: 90
+    step: 1
+    unit_of_measurement: "°C"
+    initial_value: 60
+    optimistic: true
+    restore_value: true
+    on_value:
+      - globals.set: { id: target_temp_kotel, value: !lambda "return x;" }
+
+  - platform: template
+    name: "Бойлер: Цільова T"
+    id: web_target_boiler
+    min_value: 10
+    max_value: 80
+    step: 1
+    unit_of_measurement: "°C"
+    initial_value: 50
+    optimistic: true
+    restore_value: true
+    on_value:
+      - globals.set: { id: target_temp_boiler, value: !lambda "return x;" }
+
+  - platform: template
+    name: "Бойлер: Гістерезис"
+    id: web_hyst_boiler
+    min_value: 1
+    max_value: 20
+    step: 1
+    unit_of_measurement: "°C"
+    initial_value: 5
+    optimistic: true
+    restore_value: true
+    on_value:
+      - globals.set: { id: boiler_hysteresis, value: !lambda "return x;" }
+
+  - platform: template
+    name: "Котел: Старт помпи (C)"
+    min_value: 20
+    max_value: 70
+    step: 1
+    initial_value: 40
+    optimistic: true
+    restore_value: true
+    on_value:
+      - globals.set: { id: temp_pump_start, value: !lambda "return x;" }
+  
+  - platform: template
+    name: "Котел: Час розпалу (хв)"
+    min_value: 10
+    max_value: 120
+    step: 5
+    initial_value: 30
+    optimistic: true
+    restore_value: true
+    on_value:
+      - globals.set: { id: ignition_timeout_min, value: !lambda "return (int)x;" }
+
+  - platform: template
+    name: "Котел: T згасання (C)"
+    min_value: 20
+    max_value: 60
+    step: 1
+    initial_value: 35
+    optimistic: true
+    restore_value: true
+    on_value:
+      - globals.set: { id: temp_extinguish, value: !lambda "return x;" }
+
+  - platform: template
+    name: "Котел: Поріг перегріву (C)"
+    min_value: 70
+    max_value: 95
+    step: 1
+    initial_value: 85
+    optimistic: true
+    restore_value: true
+    on_value:
+      - globals.set: { id: temp_overheat, value: !lambda "return x;" }
+
+  - platform: template
+    name: "Підлога: Старт (C)"
+    min_value: 15
+    max_value: 45
+    step: 1
+    initial_value: 25
+    optimistic: true
+    restore_value: true
+    on_value:
+      - globals.set: { id: target_floor_start, value: !lambda "return x;" }
+
+interval:
+  - interval: 60s
+    then:
+      - lambda: |-
+          update_remote_data();
+          id(sw_floor_pump).publish_state(get_r_pump()); 
+          id(floor_temp_remote).update();
+
+  - interval: 30s
+    then:
+      - lambda: |-
+          if (id(kotel_mode) == 2) {
+             float cur = id(floor_temp_remote).state;
+             float trg = id(target_floor_start);
+             if (std::isnan(cur)) return;
+             if (cur < trg) {
+               if (!id(sw_floor_pump).state) send_pump_cmd(true);
+             }
+             else if (cur > (trg + 2.0)) {
+               if (id(sw_floor_pump).state) send_pump_cmd(false);
+             }
+          }
+
+  - interval: 1s
+    then:
+      - lambda: |-
+          if (id(current_page) != 0) {
+            id(menu_timeout)++;
+            if (id(menu_timeout) >= 10) {
+              id(current_page) = 0;
+              id(menu_cursor) = 0;
+              id(my_display).update();
+            }
+          }
+
+  - interval: 5s
+    then:
+      - lambda: |-
+          float t_flow = id(temp_flow).state;
+          float t_water = id(temp_water).state;
+          bool has_220 = (id(mains_voltage).state > 1.0);
+          uint32_t now_ms = millis();
+          int now_s = now_ms / 1000;
+
+          // БОЙЛЕР
+          if (!id(temp_water).has_state() || !id(boiler_enabled)) {
+             if (id(boiler_relay).state) id(boiler_relay).turn_off();
+          } else {
+             if (t_water < (id(target_temp_boiler) - id(boiler_hysteresis))) {
+               if (!id(boiler_relay).state) id(boiler_relay).turn_on();
+             } else if (t_water >= id(target_temp_boiler)) {
+               if (id(boiler_relay).state) id(boiler_relay).turn_off();
+             }
+          }
+
+          // КОТЕЛ
+          if (t_flow >= id(temp_overheat)) {
+            id(kotel_mode) = 0; 
+            id(fan_220).turn_off();
+            id(fan_12v_pwm).set_level(0);
+            if (has_220) id(pump_220).turn_on();
+            else id(pump_12v_pwm).set_level(1.0);
+            return;
+          }
+
+          if (id(kotel_mode) == 0) { 
+            if (id(kotel_pid_climate).mode != CLIMATE_MODE_OFF) {
+               id(kotel_pid_climate).make_call().set_mode(CLIMATE_MODE_OFF).perform();
+            }
+            id(fan_220).turn_off();
+            id(fan_12v_pwm).set_level(0);
+            if (t_flow >= id(temp_auto_ignite)) { 
+               id(kotel_mode) = 1; 
+               id(ignition_start_time) = now_s; 
+            }
+          }
+          else if (id(kotel_mode) == 1) { 
+            if (has_220) id(fan_220).turn_on();
+            else id(fan_12v_pwm).set_level(0.7);
+            
+            if (t_flow >= id(temp_pump_start)) id(kotel_mode) = 2;
+            else if ((now_s - id(ignition_start_time)) > (id(ignition_timeout_min) * 60)) id(kotel_mode) = 0;
+          }
+          else if (id(kotel_mode) == 2) { 
+            if (has_220) {
+              id(pump_220).turn_on();
+              id(pump_12v_pwm).set_level(0);
+              
+              if (id(kotel_pid_climate).mode != CLIMATE_MODE_HEAT) {
+                 id(kotel_pid_climate).make_call().set_mode(CLIMATE_MODE_HEAT).perform();
+              }
+              if (id(kotel_pid_climate).target_temperature != id(target_temp_kotel)) {
+                 id(kotel_pid_climate).make_call().set_target_temperature(id(target_temp_kotel)).perform();
+              }
+              
+              // ПОМИЛКУ ВИПРАВЛЕНО (Видалено рядок з .state)
+
+              // ВЕНТИЛЯТОР 220В (ON/OFF)
+              if (t_flow < id(target_temp_kotel)) {
+                 if (!id(fan_220).state) id(fan_220).turn_on();
+              } else {
+                 if (id(fan_220).state) id(fan_220).turn_off();
+              }
+            } else {
+              id(pump_220).turn_off();
+              id(pump_12v_pwm).set_level(0.6); 
+              id(fan_12v_pwm).set_level(0.3);
+            }
+            if (t_flow <= id(temp_extinguish)) id(kotel_mode) = 0;
+          }
+
+switch:
+  - platform: template
+    name: "Увімкнути Бойлер"
+    id: web_boiler_switch
+    icon: "mdi:water-boiler"
+    optimistic: true
+    lambda: return id(boiler_enabled);
+    turn_on_action:
+      - globals.set: { id: boiler_enabled, value: 'true' }
+    turn_off_action:
+      - globals.set: { id: boiler_enabled, value: 'false' }
+
+  - platform: template
+    name: "Старт Котла (Розпал)"
+    id: web_kotel_start
+    icon: "mdi:fire"
+    lambda: |-
+      return (id(kotel_mode) > 0);
+    turn_on_action:
+      - lambda: |-
+          if (id(kotel_mode) == 0) {
+            id(kotel_mode) = 1;
+            id(ignition_start_time) = millis() / 1000;
+          }
+    turn_off_action:
+      - globals.set: { id: kotel_mode, value: '0' }
+
+  - platform: template
+    name: "Насос Підлоги (ВКЛ/ВИКЛ)"
+    id: sw_floor_pump
+    optimistic: false 
+    lambda: return get_r_pump();
+    turn_on_action:
+      - lambda: send_pump_cmd(true);
+    turn_off_action:
+      - lambda: send_pump_cmd(false);
+
+  - platform: gpio
+    pin: { number: GPIO26, inverted: true }
+    name: "Насос 220В"
+    id: pump_220
+    restore_mode: ALWAYS_OFF
+  
+  - platform: gpio
+    pin: { number: GPIO27, inverted: true }
+    name: "Вентилятор 220В"
+    id: fan_220
+    restore_mode: ALWAYS_OFF
+
+  - platform: gpio
+    pin: { number: GPIO14, inverted: true }
+    name: "Реле Бойлера"
+    id: boiler_relay
+    restore_mode: ALWAYS_OFF
+  
+  - platform: gpio
+    pin: { number: GPIO25, inverted: true }
+    name: "Розморозка SSR"
+    id: defrost_ssr
+    restore_mode: ALWAYS_OFF
+
+i2c:
+  sda: GPIO21
+  scl: GPIO22
+  scan: true
+  frequency: 200kHz
+
+display:
+  - platform: ssd1306_i2c
+    model: "SH1106 128x64"
+    address: 0x3C
+    id: my_display
+    update_interval: 333ms
+    lambda: |-
+      if (id(current_page) == 0) {
+        if (id(mains_voltage).state < 1.0) { it.print(0, 0, id(font_main), "MODE:12V"); } 
+        else { it.print(0, 0, id(font_main), "MODE:220V"); }
+        it.printf(80, 0, id(font_main), "%.1fV", id(bat_voltage).state);
+
+        if (id(kotel_mode) > 0) {
+             it.filled_rectangle(0, 16, 128, 15);
+             if (id(temp_flow).has_state()) { 
+                 it.printf(0, 16, id(font_main), Color::BLACK, "Kot:%.0f", id(temp_flow).state); 
+             } else { 
+                 it.print(0, 16, id(font_main), Color::BLACK, "Kot:--"); 
+             }
+             it.printf(70, 16, id(font_main), Color::BLACK, "/ Set:%.0f", id(target_temp_kotel));
+        } else {
+             if (id(temp_flow).has_state()) { 
+                 it.printf(0, 16, id(font_main), "Kot:%.0f", id(temp_flow).state); 
+             } else { 
+                 it.print(0, 16, id(font_main), "Kot:--"); 
+             }
+             it.printf(70, 16, id(font_main), "/ Set:%.0f", id(target_temp_kotel));
+        }
+
+        if (id(boiler_enabled)) {
+           it.filled_rectangle(0, 32, 128, 15);
+           if (id(temp_water).has_state()) { 
+             it.printf(0, 32, id(font_main), Color::BLACK, "H2O:%.0f", id(temp_water).state); 
+           } else { it.print(0, 32, id(font_main), Color::BLACK, "H2O:ERR"); }
+           it.printf(70, 32, id(font_main), Color::BLACK, "/ Set:%.0f", id(target_temp_boiler));
+        } else {
+           if (id(temp_water).has_state()) { 
+             it.printf(0, 32, id(font_main), "H2O:%.0f", id(temp_water).state); 
+           } else { it.print(0, 32, id(font_main), "H2O:ERR"); }
+           it.print(70, 32, id(font_main), "(OFF)");
+        }
+
+        const char* km = (id(kotel_mode)==0)?"OFF":(id(kotel_mode)==1?"IGNIT":"WORK");
+        it.printf(0, 48, id(font_small), "K:%s", km);
+        
+        bool pump_on = id(pump_220).state || (id(kotel_mode) == 2 && id(mains_voltage).state < 1.0);
+        if (pump_on) it.print(45, 48, id(font_small), "PUMP");
+
+        bool fan_on = id(fan_220).state || ( (id(kotel_mode) == 1 || id(kotel_mode) == 2) && id(mains_voltage).state < 1.0);
+        if (fan_on) it.print(80, 48, id(font_small), "FAN");
+        
+        if (id(boiler_relay).state) it.print(105, 48, id(font_small), "H2O");
+      }
+      else if (id(current_page) == 1) {
+        it.print(0, 0, id(font_small), "- MENU -");
+        if (id(menu_cursor) == 0) it.print(0, 20, id(font_main), "> KOTEL SET");
+        else it.print(10, 20, id(font_main), "KOTEL SET");
+        if (id(menu_cursor) == 1) it.print(0, 40, id(font_main), "> BOILER SET");
+        else it.print(10, 40, id(font_main), "BOILER SET");
+      }
+      else if (id(current_page) == 2) {
+        it.print(0, 0, id(font_small), "KOTEL TARGET:");
+        it.printf(40, 25, id(font_main), "%.0f C", id(target_temp_kotel));
+        it.rectangle(30, 22, 60, 24);
+      }
+      else if (id(current_page) == 3) {
+        it.print(0, 0, id(font_small), "BOILER TARGET:");
+        it.printf(40, 25, id(font_main), "%.0f C", id(target_temp_boiler));
+        it.rectangle(30, 22, 60, 24);
+      }
+
+binary_sensor:
+  - platform: gpio
+    pin: { number: GPIO18, mode: INPUT_PULLUP, inverted: true }
+    name: "Кнопка OK"
+    filters: [delayed_on: 20ms]
+    on_click:
+      - min_length: 50ms
+        max_length: 500ms
+        then:
+          - lambda: |-
+              id(menu_timeout) = 0;
+              if (id(current_page) == 0) { id(current_page) = 1; id(menu_cursor) = 0; }
+              else if (id(current_page) == 1) { 
+                 id(current_page) = (id(menu_cursor) == 0) ? 2 : 3;
+              }
+              else { id(current_page) = 1; }
+              id(my_display).update();
+      - min_length: 800ms
+        max_length: 5000ms
+        then:
+          - lambda: |-
+              id(current_page) = 0; 
+              id(my_display).update();
+
+  - platform: gpio
+    pin: { number: GPIO19, mode: INPUT_PULLUP, inverted: true }
+    name: "Кнопка Plus"
+    filters: [delayed_on: 20ms]
+    on_click:
+      - min_length: 50ms
+        then:
+          - lambda: |-
+              id(menu_timeout) = 0;
+              if (id(current_page) == 0) { 
+                 id(boiler_enabled) = !id(boiler_enabled); 
+                 id(web_boiler_switch).publish_state(id(boiler_enabled));
+              }
+              else if (id(current_page) == 1) { 
+                 if (id(menu_cursor) < 1) id(menu_cursor)++; 
+              }
+              else if (id(current_page) == 2) {
+                 if (id(target_temp_kotel) < 90) id(target_temp_kotel)++;
+                 id(web_target_kotel).publish_state(id(target_temp_kotel));
+              }
+              else if (id(current_page) == 3) {
+                 if (id(target_temp_boiler) < 90) id(target_temp_boiler)++;
+                 id(web_target_boiler).publish_state(id(target_temp_boiler));
+              }
+              id(my_display).update();
+
+  - platform: gpio
+    pin: { number: GPIO23, mode: INPUT_PULLUP, inverted: true }
+    name: "Кнопка Minus"
+    filters: [delayed_on: 20ms]
+    on_click:
+      - min_length: 50ms
+        then:
+          - lambda: |-
+              id(menu_timeout) = 0;
+              if (id(current_page) == 0) { 
+                 if (id(kotel_mode) == 0) { 
+                    id(kotel_mode) = 1; 
+                    id(ignition_start_time) = millis()/1000; 
+                    id(web_kotel_start).publish_state(true);
+                 }
+                 else { 
+                    id(kotel_mode) = 0; 
+                    id(web_kotel_start).publish_state(false);
+                 }
+              }
+              else if (id(current_page) == 1) { 
+                 if (id(menu_cursor) > 0) id(menu_cursor)--; 
+              }
+              else if (id(current_page) == 2) {
+                 if (id(target_temp_kotel) > 20) id(target_temp_kotel)--;
+                 id(web_target_kotel).publish_state(id(target_temp_kotel));
+              }
+              else if (id(current_page) == 3) {
+                 if (id(target_temp_boiler) > 10) id(target_temp_boiler)--;
+                 id(web_target_boiler).publish_state(id(target_temp_boiler));
+              }
+              id(my_display).update();
